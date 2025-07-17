@@ -1,9 +1,9 @@
-import os
-from fastapi import FastAPI, File, UploadFile
+import os, uvicorn
+from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.responses import HTMLResponse
 import google.generativeai as genai
-import odoorpc  # lightweight Odoo XML-RPC client
+import odoorpc
 
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 model = genai.GenerativeModel("gemini-1.5-flash")
@@ -12,46 +12,51 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[os.getenv("FRONTEND_URL")],
+    allow_origins=[os.getenv("FRONTEND_URL", "*")],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-class JobApplyPayload(BaseModel):
-    job_id: int
-    name: str
-    email: str
 
 @app.get("/")
 def health():
     return {"status": "ok"}
 
 @app.post("/upload-cv/")
-async def upload_cv(file: UploadFile):
+async def upload_cv(file: UploadFile = File(...)):
     content = await file.read()
     text = model.generate_content([
-        "Extract structured candidate data (name, email, skills, experience years) from this CV:",
+        "Extract structured candidate data (name, email, skills, experience) from this CV:",
         {"mime_type": file.content_type, "data": content}
     ]).text
     return {"raw_text": text}
 
-@app.post("/jobs/{job_id}/apply")
-def apply(job_id: int, payload: JobApplyPayload):
+@app.post("/apply/")
+def apply(job_id: int = Form(...), name: str = Form(...), email: str = Form(...)):
     odoo = odoorpc.ODOO(host=os.getenv("ODOO_URL").replace("https://", ""),
                         protocol="jsonrpcs", port=443)
-    odoo.login(os.getenv("ODOO_DB"),
-               os.getenv("ODOO_USERNAME"),
-               os.getenv("ODOO_PASSWORD"))
+    odoo.login(os.getenv("ODOO_DB"), os.getenv("ODOO_USERNAME"), os.getenv("ODOO_PASSWORD"))
     applicant_id = odoo.env["hr.applicant"].create({
-        "name": f"{payload.name} – {payload.email}",
+        "name": f"{name} – {email}",
         "job_id": job_id,
-        "email_from": payload.email,
+        "email_from": email,
         "stage_id": odoo.env["hr.recruitment.stage"].search([("name", "=", "New")])[0]
     })
     return {"applicant_id": applicant_id}
 
-@app.post("/workflow/start")
-def start_workflow(job_id: int):
-    # TODO: background job to scan & score all "New" applicants
-    return {"msg": "Workflow started"}
+# Serve the tiny React build at /interview/{id}
+@app.get("/interview/{applicant_id}", response_class=HTMLResponse)
+def interview_page(applicant_id: int):
+    return f"""
+    <!doctype html>
+    <html>
+      <head><title>AI Interview</title></head>
+      <body>
+        <h1>Interview for applicant {applicant_id}</h1>
+        <p>AI questions will appear here (plug in Gemini Live API).</p>
+      </body>
+    </html>
+    """
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
