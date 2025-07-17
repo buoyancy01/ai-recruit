@@ -1,10 +1,22 @@
-FROM node:18-alpine as build
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run build   # creates /app/build
+# ---- build stage ----
+FROM node:18-alpine AS build
 
+# Set correct working directory
+WORKDIR /app
+
+# Copy package files first (they *must* be in the root of your repo)
+COPY package*.json ./
+
+# Install dependencies
+RUN npm ci --silent
+
+# Copy everything else (including index.tsx, index.html, etc.)
+COPY . .
+
+# Build the app (creates /app/build)
+RUN npm run build
+
+# ---- runtime stage ----
 FROM nginx:alpine
 COPY --from=build /app/build /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
